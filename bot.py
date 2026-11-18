@@ -13,6 +13,24 @@ from aiogram.types import (
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
+# Render'da 24/7 ishlashi uchun kichik veb-server (Flask)
+from flask import Flask
+from threading import Thread
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot 24/7 ishlayapti!"
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+
 TOKEN = "8101370403:AAEERl5Juy6-wxKrSCku-0Hng_8I99R6UG8"
 
 # Adminlarning Telegram ID raqamlari ro'yxati
@@ -231,4 +249,5 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    keep_alive()  # Render uchun kichik veb-serverni fon rejimida yoqadi
     asyncio.run(main())
