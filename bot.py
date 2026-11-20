@@ -31,7 +31,7 @@ logging.basicConfig(
 # ==========================================
 # KONFIGURATSIYA
 # ==========================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8101370403:AAH_ESL3aaa28PfBaBXyBw0EJQKDP3GIEDQ").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8101370403:AAE7vWlH4VqjmbUtCC8SO52IchruRavgg1g").strip()
 ADMIN_IDS: set[int] = {
     7193226157 , 1013283682  # O'zingizning Telegram ID raqamingizni yozing
 }
