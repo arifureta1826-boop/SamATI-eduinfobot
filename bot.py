@@ -31,9 +31,9 @@ logging.basicConfig(
 # ==========================================
 # KONFIGURATSIYA
 # ==========================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8101370403:AAE2BYvdJbvtcih_A1za5jc-RSDz9zr92K8").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_IDS: set[int] = {
-    7193226157 , 1013283682  # O'zingizning Telegram ID raqamingizni yozing
+    123456789,  # O'zingizning Telegram ID raqamingizni yozing
 }
 
 DB_PATH = os.getenv("DB_PATH", "bot_database.db")
@@ -56,7 +56,7 @@ MAIN_MENU_ITEMS: list[str] = [
     "Loyiha muallifi",
 ]
 
-STAGES_LIST: list[str] = [
+DEFAULT_STAGES: list[str] = [
     "1-bosqich",
     "2-bosqich",
     "3-bosqich",
@@ -69,9 +69,15 @@ SUBJECTS_WITH_STAGES: set[str] = {
     "🧠 Falsafa",
 }
 
+STAGE_SEP = " :: "
+
 
 def make_stage_key(subject: str, stage: str) -> str:
-    return f"{subject} :: {stage}"
+    return f"{subject}{STAGE_SEP}{stage}"
+
+
+def is_stage_key(key: str) -> bool:
+    return STAGE_SEP in key
 
 
 # ==========================================
@@ -117,6 +123,16 @@ def init_db():
         )
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS custom_stages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject_name TEXT NOT NULL,
+                stage_name TEXT NOT NULL,
+                UNIQUE(subject_name, stage_name)
+            )
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS materials (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 section_key TEXT NOT NULL,
@@ -138,23 +154,30 @@ def get_custom_sections() -> list[str]:
         return [r["title"] for r in cur.fetchall()]
 
 
+def get_custom_stages(subject_name: str) -> list[str]:
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT stage_name FROM custom_stages WHERE subject_name = ? ORDER BY id ASC",
+            (subject_name,),
+        )
+        return [r["stage_name"] for r in cur.fetchall()]
+
+
+def get_all_stages_for_subject(subject_name: str) -> list[str]:
+    stages = list(DEFAULT_STAGES)
+    for st in get_custom_stages(subject_name):
+        if st not in stages:
+            stages.append(st)
+    return stages
+
+
 def get_all_main_sections() -> list[str]:
     result = list(MAIN_MENU_ITEMS)
     for item in get_custom_sections():
         if item not in result:
             result.append(item)
     return result
-
-
-def get_all_manageable_targets() -> list[str]:
-    targets: list[str] = []
-    for sec in get_all_main_sections():
-        if sec in SUBJECTS_WITH_STAGES:
-            for st in STAGES_LIST:
-                targets.append(make_stage_key(sec, st))
-        else:
-            targets.append(sec)
-    return targets
 
 
 def add_custom_section(title: str) -> bool:
@@ -171,6 +194,23 @@ def add_custom_section(title: str) -> bool:
             return False
 
 
+def add_custom_stage(subject_name: str, stage_name: str) -> bool:
+    clean_stage = stage_name.strip()
+    if not clean_stage or clean_stage in DEFAULT_STAGES:
+        return False
+    with get_conn() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "INSERT INTO custom_stages (subject_name, stage_name) VALUES (?, ?)",
+                (subject_name, clean_stage),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
 def rename_custom_section(old_title: str, new_title: str) -> bool:
     clean = new_title.strip()
     if not clean:
@@ -181,7 +221,30 @@ def rename_custom_section(old_title: str, new_title: str) -> bool:
             cur.execute("UPDATE custom_sections SET title = ? WHERE title = ?", (clean, old_title))
             cur.execute("UPDATE materials SET section_key = ? WHERE section_key = ?", (clean, old_title))
             conn.commit()
-            return True
+            return cur.rowcount > 0
+        except sqlite3.IntegrityError:
+            return False
+
+
+def rename_custom_stage(subject_name: str, old_stage: str, new_stage: str) -> bool:
+    clean_new = new_stage.strip()
+    if not clean_new or old_stage in DEFAULT_STAGES or clean_new in DEFAULT_STAGES:
+        return False
+    old_key = make_stage_key(subject_name, old_stage)
+    new_key = make_stage_key(subject_name, clean_new)
+    with get_conn() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "UPDATE custom_stages SET stage_name = ? WHERE subject_name = ? AND stage_name = ?",
+                (clean_new, subject_name, old_stage),
+            )
+            cur.execute(
+                "UPDATE materials SET section_key = ? WHERE section_key = ?",
+                (new_key, old_key),
+            )
+            conn.commit()
+            return cur.rowcount > 0
         except sqlite3.IntegrityError:
             return False
 
@@ -192,6 +255,38 @@ def delete_custom_section(title: str):
         cur.execute("DELETE FROM materials WHERE section_key = ?", (title,))
         cur.execute("DELETE FROM custom_sections WHERE title = ?", (title,))
         conn.commit()
+
+
+def delete_custom_stage(subject_name: str, stage_name: str):
+    key = make_stage_key(subject_name, stage_name)
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM materials WHERE section_key = ?", (key,))
+        cur.execute(
+            "DELETE FROM custom_stages WHERE subject_name = ? AND stage_name = ?",
+            (subject_name, stage_name),
+        )
+        conn.commit()
+
+
+def is_deletable_target(target_key: str) -> bool:
+    if target_key in get_custom_sections():
+        return True
+    if is_stage_key(target_key):
+        subj, st = target_key.split(STAGE_SEP, 1)
+        return st in get_custom_stages(subj)
+    return False
+
+
+def get_all_manageable_targets() -> list[str]:
+    targets: list[str] = []
+    for sec in get_all_main_sections():
+        if sec in SUBJECTS_WITH_STAGES:
+            for st in get_all_stages_for_subject(sec):
+                targets.append(make_stage_key(sec, st))
+        else:
+            targets.append(sec)
+    return targets
 
 
 def add_material(
@@ -241,7 +336,8 @@ def delete_material(mat_id: int) -> bool:
 # ==========================================
 class AdminStates(StatesGroup):
     waiting_new_section = State()
-    waiting_rename_section = State()
+    waiting_new_stage = State()
+    waiting_rename_target = State()
     waiting_material_content = State()
 
 
@@ -273,13 +369,23 @@ def build_main_keyboard(user_id: int | None) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
-def build_stages_keyboard(user_id: int | None) -> ReplyKeyboardMarkup:
-    rows: list[list[KeyboardButton]] = [
-        [KeyboardButton(text="1-bosqich"), KeyboardButton(text="2-bosqich")],
-        [KeyboardButton(text="3-bosqich"), KeyboardButton(text="4-bosqich")],
-    ]
+def build_stages_keyboard(subject_name: str, user_id: int | None) -> ReplyKeyboardMarkup:
+    stages = get_all_stages_for_subject(subject_name)
+    rows: list[list[KeyboardButton]] = []
+
+    pair: list[KeyboardButton] = []
+    for st in stages:
+        pair.append(KeyboardButton(text=st))
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
+
     if is_admin(user_id):
+        rows.append([KeyboardButton(text="➕ Yangi bosqich/yacheyka qo'shish")])
         rows.append([KeyboardButton(text="Ma'lumot qo'shish/o'zgartirish")])
+
     rows.append([KeyboardButton(text="🏠 Bosh menyu")])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
@@ -306,7 +412,7 @@ def build_admin_manage_inline() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def build_target_actions_inline(target_name: str, idx: int) -> InlineKeyboardMarkup:
+def build_target_actions_inline(target_key: str, idx: int) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(
@@ -319,11 +425,11 @@ def build_target_actions_inline(target_name: str, idx: int) -> InlineKeyboardMar
             ),
         ]
     ]
-    if target_name in get_custom_sections():
+    if is_deletable_target(target_key):
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="🗑 Yacheykani o'chirish",
+                    text="🗑 O'chirish",
                     callback_data=f"adm_del:{idx}",
                 )
             ]
@@ -405,20 +511,94 @@ async def on_home(message: Message, state: FSMContext):
 
 @dp.message(F.text == "❌ Bekor qilish")
 async def on_cancel(message: Message, state: FSMContext):
+    data = await state.get_data()
+    active_subject = data.get("active_subject")
     await state.clear()
     uid = message.from_user.id if message.from_user else None
-    await message.answer("Amal bekor qilindi.", reply_markup=build_main_keyboard(uid))
+
+    if active_subject in SUBJECTS_WITH_STAGES:
+        await state.update_data(active_subject=active_subject)
+        await message.answer(
+            "Amal bekor qilindi.",
+            reply_markup=build_stages_keyboard(active_subject, uid),
+        )
+    else:
+        await message.answer(
+            "Amal bekor qilindi.",
+            reply_markup=build_main_keyboard(uid),
+        )
+
+
+@dp.message(F.text == "➕ Yangi bosqich/yacheyka qo'shish")
+async def on_new_stage_start(message: Message, state: FSMContext):
+    uid = message.from_user.id if message.from_user else None
+    if not is_admin(uid):
+        await message.answer("Bu funksiya faqat administrator uchun.")
+        return
+
+    data = await state.get_data()
+    active_subject = data.get("active_subject")
+    if active_subject not in SUBJECTS_WITH_STAGES:
+        await message.answer(
+            "Avval O'zbekiston tarixi, Dinshunoslik yoki Falsafa bo'limiga kiring.",
+            reply_markup=build_main_keyboard(uid),
+        )
+        return
+
+    await state.set_state(AdminStates.waiting_new_stage)
+    await message.answer(
+        f"<b>{html.escape(active_subject)}</b> ichiga qo'shiladigan yangi bosqich/yacheyka nomini kiriting (masalan: <code>5-bosqich</code>):",
+        reply_markup=build_cancel_keyboard(),
+    )
+
+
+@dp.message(AdminStates.waiting_new_stage)
+async def on_new_stage_save(message: Message, state: FSMContext):
+    uid = message.from_user.id if message.from_user else None
+    data = await state.get_data()
+    active_subject = data.get("active_subject")
+    stage_title = (message.text or "").strip()
+
+    if not stage_title:
+        await message.answer("Nom bo'sh bo'lmasin.")
+        return
+
+    if active_subject not in SUBJECTS_WITH_STAGES:
+        await state.clear()
+        await message.answer("Fan topilmadi.", reply_markup=build_main_keyboard(uid))
+        return
+
+    created = add_custom_stage(active_subject, stage_title)
+    await state.set_state(None)
+    await state.update_data(active_subject=active_subject)
+
+    if created:
+        await message.answer(
+            f"✅ <b>{html.escape(active_subject)}</b> ichiga <b>{html.escape(stage_title)}</b> qo'shildi.",
+            reply_markup=build_stages_keyboard(active_subject, uid),
+        )
+    else:
+        await message.answer(
+            f"⚠️ <b>{html.escape(stage_title)}</b> allaqachon mavjud yoki standart bosqich nomi.",
+            reply_markup=build_stages_keyboard(active_subject, uid),
+        )
 
 
 @dp.message(F.text == "Ma'lumot qo'shish/o'zgartirish")
 async def on_admin_manage_menu(message: Message, state: FSMContext):
+    data = await state.get_data()
+    active_subject = data.get("active_subject")
     await state.clear()
+    if active_subject:
+        await state.update_data(active_subject=active_subject)
+
     uid = message.from_user.id if message.from_user else None
     if not is_admin(uid):
         await message.answer("Bu bo'lim faqat administrator uchun.")
         return
+
     await message.answer(
-        "Qaysi bo'lim, bosqich yoki yacheykani tahrirlaysiz yoki o'chirasiz?",
+        "Qaysi bo'lim, bosqich yoki yacheykani boshqarasiz?",
         reply_markup=build_admin_manage_inline(),
     )
 
@@ -466,6 +646,7 @@ async def on_save_material(message: Message, state: FSMContext):
     uid = message.from_user.id if message.from_user else None
     data = await state.get_data()
     section_key = data.get("target_section", MAIN_MENU_ITEMS[0])
+    active_subject = data.get("active_subject")
 
     raw_text = message.caption if message.caption else message.text
     safe_text = html.escape(raw_text) if raw_text else None
@@ -497,9 +678,17 @@ async def on_save_material(message: Message, state: FSMContext):
 
     add_material(section_key, safe_text, file_id, file_name, ctype)
     await state.clear()
+    if active_subject:
+        await state.update_data(active_subject=active_subject)
+
+    kb = (
+        build_stages_keyboard(active_subject, uid)
+        if active_subject in SUBJECTS_WITH_STAGES
+        else build_main_keyboard(uid)
+    )
     await message.answer(
         f"✅ Ma'lumot <b>{html.escape(section_key)}</b> ga saqlandi.",
-        reply_markup=build_main_keyboard(uid),
+        reply_markup=kb,
     )
 
 
@@ -514,8 +703,8 @@ async def on_adm_ren(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Topilmadi", show_alert=True)
         return
     target = targets[idx]
-    await state.set_state(AdminStates.waiting_rename_section)
-    await state.update_data(old_title=target)
+    await state.set_state(AdminStates.waiting_rename_target)
+    await state.update_data(rename_target_key=target)
     await callback.message.answer(
         f"<b>{html.escape(target)}</b> uchun yangi nom kiriting:",
         reply_markup=build_cancel_keyboard(),
@@ -523,31 +712,48 @@ async def on_adm_ren(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@dp.message(AdminStates.waiting_rename_section)
+@dp.message(AdminStates.waiting_rename_target)
 async def on_save_rename(message: Message, state: FSMContext):
     uid = message.from_user.id if message.from_user else None
     data = await state.get_data()
-    old_title = data.get("old_title", "")
+    target_key = data.get("rename_target_key", "")
+    active_subject = data.get("active_subject")
     new_title = (message.text or "").strip()
+
     if not new_title:
         await message.answer("Yangi nom bo'sh bo'lmasin.")
         return
-    ok = rename_custom_section(old_title, new_title)
+
+    ok = False
+    if is_stage_key(target_key):
+        subj, old_st = target_key.split(STAGE_SEP, 1)
+        ok = rename_custom_stage(subj, old_st, new_title)
+    else:
+        ok = rename_custom_section(target_key, new_title)
+
     await state.clear()
+    if active_subject:
+        await state.update_data(active_subject=active_subject)
+
+    kb = (
+        build_stages_keyboard(active_subject, uid)
+        if active_subject in SUBJECTS_WITH_STAGES
+        else build_main_keyboard(uid)
+    )
     if ok:
         await message.answer(
-            f"✅ <b>{html.escape(old_title)}</b> -> <b>{html.escape(new_title)}</b> ga o'zgartirildi.",
-            reply_markup=build_main_keyboard(uid),
+            f"✅ Nomi <b>{html.escape(new_title)}</b> ga o'zgartirildi.",
+            reply_markup=kb,
         )
     else:
         await message.answer(
-            "⚠️ Asosiy menyu nomlari o'zgarmaydi yoki bunday nom allaqachon bor.",
-            reply_markup=build_main_keyboard(uid),
+            "⚠️ Standart bo'lim/bosqich nomini o'zgartirib bo'lmaydi yoki bunday nom allaqachon bor.",
+            reply_markup=kb,
         )
 
 
 @dp.callback_query(F.data.startswith("adm_del:"))
-async def on_adm_del(callback: CallbackQuery):
+async def on_adm_del(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("Ruxsat yo'q", show_alert=True)
         return
@@ -557,10 +763,27 @@ async def on_adm_del(callback: CallbackQuery):
         await callback.answer("Topilmadi", show_alert=True)
         return
     target = targets[idx]
-    if target not in get_custom_sections():
-        await callback.answer("Asosiy bo'limni o'chirib bo'lmaydi", show_alert=True)
+    if not is_deletable_target(target):
+        await callback.answer("Asosiy bo'lim yoki 1-4 bosqichni o'chirib bo'lmaydi", show_alert=True)
         return
-    delete_custom_section(target)
+
+    if is_stage_key(target):
+        subj, st = target.split(STAGE_SEP, 1)
+        delete_custom_stage(subj, st)
+        data = await state.get_data()
+        active_subject = data.get("active_subject")
+        if active_subject == subj:
+            await callback.message.answer(
+                f"🗑 <b>{html.escape(target)}</b> o'chirildi.",
+                reply_markup=build_stages_keyboard(subj, callback.from_user.id),
+            )
+    else:
+        delete_custom_section(target)
+        await callback.message.answer(
+            f"🗑 <b>{html.escape(target)}</b> o'chirildi.",
+            reply_markup=build_main_keyboard(callback.from_user.id),
+        )
+
     await callback.message.edit_text(f"🗑 <b>{html.escape(target)}</b> o'chirildi.")
     await callback.answer("O'chirildi")
 
@@ -621,23 +844,20 @@ async def on_menu_or_stage_click(message: Message, state: FSMContext):
         await state.update_data(active_subject=text)
         await message.answer(
             f"<b>{html.escape(text)}</b> — bosqichni tanlang:",
-            reply_markup=build_stages_keyboard(uid),
+            reply_markup=build_stages_keyboard(text, uid),
         )
         return
 
-    if text in STAGES_LIST:
-        data = await state.get_data()
-        active_subject = data.get("active_subject")
-        if active_subject in SUBJECTS_WITH_STAGES:
-            key = make_stage_key(active_subject, text)
-            title = f"{active_subject} — {text}"
-        else:
-            key = text
-            title = text
+    data = await state.get_data()
+    active_subject = data.get("active_subject")
+    if active_subject in SUBJECTS_WITH_STAGES and text in get_all_stages_for_subject(active_subject):
+        key = make_stage_key(active_subject, text)
+        title = f"{active_subject} — {text}"
         await send_section_materials(message, key, title)
         return
 
     if text in get_all_main_sections():
+        await state.update_data(active_subject=None)
         await send_section_materials(message, text, text)
 
 
