@@ -31,9 +31,9 @@ logging.basicConfig(
 # ==========================================
 # KONFIGURATSIYA
 # ==========================================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8101370403:AAH_ESL3aaa28PfBaBXyBw0EJQKDP3GIEDQ").strip()
 ADMIN_IDS: set[int] = {
-    123456789,  # O'zingizning Telegram ID raqamingizni yozing
+    7193226157 , 1013283682  # O'zingizning Telegram ID raqamingizni yozing
 }
 
 DB_PATH = os.getenv("DB_PATH", "bot_database.db")
